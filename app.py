@@ -15,24 +15,21 @@ movies = [
         "title": "Inception",
         "director": "Christopher Nolan",
         "year": 2010,
-        "watched": True,
-        "reviews": []
+        "watched": True
     },
     {
         "id": 2,
         "title": "The Matrix",
         "director": "Lana Wachowski, Lilly Wachowski",
         "year": 1999,
-        "watched": True,
-        "reviews": []
+        "watched": True
     },
     {
         "id": 3,
         "title": "Spider-Man: Into the Spider-Verse",
         "director": "Peter Ramsey, Bob Persichetti, Rodney Rothman",
         "year": 2018,
-        "watched": False,
-        "reviews": []
+        "watched": False
     },
 ]
 
@@ -45,6 +42,18 @@ def home():
 
 @app.route('/api')
 def api_hello():
+    """
+    API welcome message
+    ---
+    responses:
+      200:
+        description: Welcome message
+        schema:
+          type: object
+          properties:
+            message:
+              type: string
+    """
     return jsonify({'message': 'Welcome to the movie API!'})
 
 def get_db():
@@ -62,7 +71,21 @@ def close_db(exception): # teardown is a flask decorator that runs when the requ
 
 @app.get("/db-ping")
 def db_ping():
-    db = get_db()          # open (or reuse) the connection for this request
+    """
+    Check the SQLite database connection
+    ---
+    responses:
+      200:
+        description: Database is reachable
+        schema:
+          type: object
+          properties:
+            ok:
+              type: boolean
+            value:
+              type: integer
+    """
+    db = get_db()         # open (or reuse) the connection for this request
     cursor = db.cursor()   # just to prove we can talk to SQLite
     cursor.execute("SELECT 1")  # simple throwaway query
     row = cursor.fetchone()
@@ -74,11 +97,29 @@ def get_all_movies():
     Get all movies
     ---
     responses:
-        200:
-            description: A list of movies
+      200:
+        description: A list of movies
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              title:
+                type: string
+              year:
+                type: integer
+              director_id:
+                type: integer
     """
-    
-    return jsonify(movies)
+    db = get_db() # get the database connection
+    cursor = db.execute("SELECT id, title, year, director_id FROM movies")
+    rows = cursor.fetchall()
+
+    movies_db = [dict(row) for row in rows]  # sqlite3.Row -> dict
+
+    return jsonify(movies_db), 200
 
 
 @app.route("/movies/<int:id>", methods=["GET"])
@@ -86,57 +127,120 @@ def get_movie(id):
     """
     Get a movie by ID
     ---
+    parameters:
+      - name: id
+        in: path
+        type: integer
+        required: true
+        description: ID of the movie to retrieve
     responses:
-        200:
-            description: A movie object
-        404:
-            description: Movie not found
+      200:
+        description: A movie object
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            title:
+              type: string
+            year:
+              type: integer
+            director_id:
+              type: integer
+      404:
+        description: Movie not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
     """
-    movie = next((m for m in movies if m["id"] == id), None)
-    
+    db = get_db() # get the database connection
+    query = "SELECT id, title, year, director_id FROM movies WHERE id = ?" # use ? for id parameter as a placeholder to prevent sql injection
+    cursor = db.execute(query, (id,))
+    row = cursor.fetchone()
+    if row:
+        movie = dict(row)
+    else:
+        movie = None
+
     if movie is None:
         return jsonify({
             "error": "Not Found",
             "message": f"Movie with id {id} was not found."
         }), 404
     
-    return jsonify(movie)
+    return jsonify(movie), 200
 
 @app.route("/movies/<int:id>", methods=["PUT"])
 def update_movie(id):
     """
     Update a movie by ID
     ---
+    parameters:
+      - name: id
+        in: path
+        type: integer
+        required: true
+        description: ID of the movie to update
+      - in: body
+        name: movie
+        required: true
+        schema:
+          type: object
+          properties:
+            title:
+              type: string
+            year:
+              type: integer
+            director_id:
+              type: integer
+          required:
+            - title
+            - year
+            - director_id
     responses:
-        200:
-            description: A movie object
-        400:
-            description: Bad request
-        404:
-            description: Movie not found
+      200:
+        description: Movie updated
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            title:
+              type: string
+            year:
+              type: integer
+            director_id:
+              type: integer
+      400:
+        description: Bad request
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
+      404:
+        description: Movie not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
     """
 
-    data = request.get_json()
+    data = request.get_json(silent=True)
 
-    errors = []
-
-    if "title" not in data or not isinstance(data["title"], str) or not data["title"].strip():
-        errors.append("Title is required and must be a non-empty string.")
-
-    if "director" not in data or not isinstance(data["director"], str) or not data["director"].strip():
-        errors.append("Director is required and must be a non-empty string.")
-
-    if "year" not in data or not isinstance(data["year"], int):
-        errors.append("Year is required and must be a number.")
-
-    if "watched" not in data or not isinstance(data["watched"], bool):
-        errors.append("Watched is required and must be true or false.")
+    errors = validate_movie(data)
 
     if errors:
-        return jsonify({
-            "error": "Bad Request",
-            "message": "; ".join(errors)
-        }), 400
+        return error_response("Bad Request", "; ".join(errors), 400)
 
     # find the movie index by id
     index = next((i for i, m in enumerate(movies) if m["id"] == id), None)
@@ -159,25 +263,10 @@ def update_movie(id):
 
     return jsonify(updated_movie), 200
 
-@app.route("/movies", methods=["POST"])
-def create_movie():
-    """
-    Create a new movie
-    ---
-    responses:
-        201:
-            description: A movie object
-        400:
-            description: Bad request
-    """
-
-    data = request.get_json()  # parses the JSON body into a Python dict
-    
-    # 1) Work out the next id on the server
-    if movies:
-        next_id = max(m["id"] for m in movies) + 1 # finds the largest existing ID and adds 1
-    else:
-        next_id = 1 # if no movies, starts at 1
+def validate_movie(data):
+    """Return a list of error messages for a movie request body (empty if valid)."""
+    if not isinstance(data, dict):
+        return ["Request body must be a valid JSON object."]
 
     errors = []
 
@@ -193,11 +282,73 @@ def create_movie():
     if "watched" not in data or not isinstance(data["watched"], bool):
         errors.append("Watched is required and must be true or false.")
 
+    return errors
+
+
+def error_response(error, message, status):
+    """Build the standard JSON error response."""
+    return jsonify({"error": error, "message": message}), status
+
+
+@app.route("/movies", methods=["POST"])
+def create_movie():
+    """
+    Create a new movie
+    ---
+    parameters:
+      - in: body
+        name: movie
+        required: true
+        schema:
+          type: object
+          properties:
+            title:
+              type: string
+            year:
+              type: integer
+            director_id:
+              type: integer
+          required:
+            - title
+            - year
+            - director_id
+    responses:
+      201:
+        description: Movie created
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            title:
+              type: string
+            year:
+              type: integer
+            director_id:
+              type: integer
+      400:
+        description: Bad request
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
+    """
+
+    data = request.get_json(silent=True)  # parses the JSON body into a Python dict (None if invalid)
+
+    # 1) Work out the next id on the server
+    if movies:
+        next_id = max(m["id"] for m in movies) + 1 # finds the largest existing ID and adds 1
+    else:
+        next_id = 1 # if no movies, starts at 1
+
+    errors = validate_movie(data)
+
     if errors:
-        return jsonify({
-            "error": "Bad Request",
-            "message": "; ".join(errors)
-        }), 400
+        return error_response("Bad Request", "; ".join(errors), 400)
 
     # declare new movie definition
     new_movie = {
@@ -217,11 +368,24 @@ def delete_movie(id):
     """
     Delete a movie by ID
     ---
+    parameters:
+      - name: id
+        in: path
+        type: integer
+        required: true
+        description: ID of the movie to delete
     responses:
-        204:
-            description: A movie object
-        404:
-            description: Movie not found
+      204:
+        description: Movie deleted (no content)
+      404:
+        description: Movie not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
     """
 
     # find movie
@@ -238,164 +402,6 @@ def delete_movie(id):
 
     # return empty response with 204 status code
     return "", 204
-
-def find_movie(movie_id):
-    return next((m for m in movies if m["id"] == movie_id), None)
-
-
-@app.route("/movies/<int:movie_id>/reviews", methods=["POST"])
-def add_review(movie_id):
-    """
-    Add a review to a movie
-    ---
-    parameters:
-      - name: movie_id
-        in: path
-        type: integer
-        required: true
-        description: ID of the movie to review
-      - in: body
-        name: review
-        required: true
-        schema:
-          type: object
-          properties:
-            author:
-              type: string
-            rating:
-              type: integer
-            comment:
-              type: string
-          required:
-            - author
-            - rating
-            - comment
-    responses:
-      201:
-        description: Review created
-        schema:
-          type: object
-          properties:
-            id:
-              type: integer
-            author:
-              type: string
-            rating:
-              type: integer
-            comment:
-              type: string
-      400:
-        description: Bad request
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-            message:
-              type: string
-      404:
-        description: Movie not found
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-            message:
-              type: string
-    """
-    # 1. Find movie or 404
-    movie = find_movie(movie_id)
-    if movie is None:
-        return (
-            jsonify({
-                "error": "Not Found",
-                "message": f"Movie with id {movie_id} not found"
-            }),
-            404,
-        )
-
-    # 2. Parse JSON body safely
-    data = request.get_json(silent=True)
-    if data is None:
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "Request body must be valid JSON"
-            }),
-            400,
-        )
-
-    author = data.get("author")
-    rating = data.get("rating")
-    comment = data.get("comment")
-
-    # 3. Presence validation
-    if author is None:
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "author is required"
-            }),
-            400,
-        )
-    if rating is None:
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "rating is required"
-            }),
-            400,
-        )
-    if comment is None:
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "comment is required"
-            }),
-            400,
-        )
-
-    # 4. Type validation
-    if not isinstance(author, str):
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "author must be a string"
-            }),
-            400,
-        )
-    if not isinstance(rating, (int, float)):
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "rating must be a number"
-            }),
-            400,
-        )
-    if not isinstance(comment, str):
-        return (
-            jsonify({
-                "error": "Bad Request",
-                "message": "comment must be a string"
-            }),
-            400,
-        )
-
-    # 5. Create new review id
-    existing_reviews = movie["reviews"]
-    new_id = (max((r["id"] for r in existing_reviews), default=0) + 1)
-
-    new_review = {
-        "id": new_id,
-        "author": author,
-        "rating": rating,
-        "comment": comment,
-    }
-
-    # 6. Append and return 201 with review
-    movie["reviews"].append(new_review)
-
-    return jsonify(new_review), 201
 
 
 if __name__ == '__main__':

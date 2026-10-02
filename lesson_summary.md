@@ -80,3 +80,4 @@ is dangerous because:
 - SQLite connections are not safely shared across threads:
   - The connection is bound to the thread that created it.
   - Other threads using it can cause errors and weird behavior.
+
