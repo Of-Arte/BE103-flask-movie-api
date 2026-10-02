@@ -1,0 +1,21 @@
+# Virtual environment
+.venv/
+env/
+venv/
+ENV/
+
+# Database file
+movies.db
+*.sqlite
+*.sqlite3
+*.db
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
+.env
+.env.*
+!.env.example
