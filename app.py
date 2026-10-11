@@ -9,29 +9,29 @@ app = Flask(__name__)
 swagger = Swagger(app)
 
 # in-memory data store
-movies = [
-    {
-        "id": 1,
-        "title": "Inception",
-        "director": "Christopher Nolan",
-        "year": 2010,
-        "watched": True
-    },
-    {
-        "id": 2,
-        "title": "The Matrix",
-        "director": "Lana Wachowski, Lilly Wachowski",
-        "year": 1999,
-        "watched": True
-    },
-    {
-        "id": 3,
-        "title": "Spider-Man: Into the Spider-Verse",
-        "director": "Peter Ramsey, Bob Persichetti, Rodney Rothman",
-        "year": 2018,
-        "watched": False
-    },
-]
+# movies = [
+#     {
+#         "id": 1,
+#         "title": "Inception",
+#         "director": "Christopher Nolan",
+#         "year": 2010,
+#         "watched": True
+#     },
+#     {
+#         "id": 2,
+#         "title": "The Matrix",
+#         "director": "Lana Wachowski, Lilly Wachowski",
+#         "year": 1999,
+#         "watched": True
+#     },
+#     {
+#         "id": 3,
+#         "title": "Spider-Man: Into the Spider-Verse",
+#         "director": "Peter Ramsey, Bob Persichetti, Rodney Rothman",
+#         "year": 2018,
+#         "watched": False
+#     },
+# ]
 
 @app.route('/')
 def home():
@@ -91,6 +91,93 @@ def db_ping():
     row = cursor.fetchone()
     return jsonify({"ok": True, "value": row[0]})
 
+@app.route("/directors", methods=["GET"])
+def get_all_directors():
+    """
+    Get all directors
+    ---
+    responses:
+      200:
+        description: A list of directors
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+    """
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute("SELECT id, name FROM directors") # get all directors
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+
+    rows = cursor.fetchall()
+    directors = [dict(row) for row in rows]
+    response = jsonify(directors)
+    response.status_code = 200
+    return response
+
+@app.route("/directors/<int:id>/movies", methods=["GET"])
+def get_movies_by_director(id):
+    """
+    Get all movies by director
+    ---
+    parameters:
+      - name: id
+        in: path
+        type: integer
+        required: true
+        description: ID of the director
+    responses:
+      200:
+        description: A list of movies
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              title:
+                type: string
+              year:
+                type: integer
+              rating:
+                type: number
+              director_id:
+                type: integer
+      404:
+        description: Director not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
+    """
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute("SELECT id, name FROM directors WHERE id = ?", (id,)) # check if director exists
+        row = cursor.fetchone()
+        if not row:
+            return error_response("Not Found", f"Director with the given ID '{id}' not found.", 404)
+        cursor.execute("SELECT id, title, year, rating, director_id FROM movies WHERE director_id = ?", (id,)) # get movies by director id
+        rows = cursor.fetchall()
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+    
+    movies = [dict(row) for row in rows]
+    response = jsonify(movies)
+    response.status_code = 200
+    return response
+    
 @app.route("/movies", methods=["GET"])
 def get_all_movies():
     """
@@ -110,17 +197,23 @@ def get_all_movies():
                 type: string
               year:
                 type: integer
+              rating:
+                type: number
               director_id:
                 type: integer
     """
     db = get_db() # get the database connection
-    cursor = db.execute("SELECT id, title, year, director_id FROM movies")
+    cursor = db.cursor()
+    try:
+      cursor.execute("SELECT id, title, year, rating, director_id FROM movies")
+    except sqlite3.OperationalError:
+      return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+
     rows = cursor.fetchall()
-
-    movies_db = [dict(row) for row in rows]  # sqlite3.Row -> dict
-
-    return jsonify(movies_db), 200
-
+    movies = [dict(row) for row in rows] if rows else []
+    response = jsonify(movies)
+    response.status_code = 200
+    return response
 
 @app.route("/movies/<int:id>", methods=["GET"])
 def get_movie(id):
@@ -145,6 +238,8 @@ def get_movie(id):
               type: string
             year:
               type: integer
+            rating:
+              type: number
             director_id:
               type: integer
       404:
@@ -158,52 +253,36 @@ def get_movie(id):
               type: string
     """
     db = get_db() # get the database connection
-    query = "SELECT id, title, year, director_id FROM movies WHERE id = ?" # use ? for id parameter as a placeholder to prevent sql injection
-    cursor = db.execute(query, (id,))
+    cursor = db.cursor()
+    query = "SELECT id, title, year, rating, director_id FROM movies WHERE id = ?" # use ? for id parameter as a placeholder to prevent sql injection
+    try:
+        cursor.execute(query, (id,))
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+
     row = cursor.fetchone()
-    if row:
-        movie = dict(row)
-    else:
-        movie = None
+    if not row:
+        return error_response("Not Found", f"Movie with id {id} was not found.", 404)
 
-    if movie is None:
-        return jsonify({
-            "error": "Not Found",
-            "message": f"Movie with id {id} was not found."
-        }), 404
-    
-    return jsonify(movie), 200
+    movie = dict(row)
+    response = jsonify(movie)
+    response.status_code = 200
+    return response
 
-@app.route("/movies/<int:id>", methods=["PUT"])
-def update_movie(id):
+@app.route("/movies/<int:id>/full", methods=["GET"])
+def get_movie_full(id):
     """
-    Update a movie by ID
+    Get a movie by ID with director name
     ---
     parameters:
       - name: id
         in: path
         type: integer
         required: true
-        description: ID of the movie to update
-      - in: body
-        name: movie
-        required: true
-        schema:
-          type: object
-          properties:
-            title:
-              type: string
-            year:
-              type: integer
-            director_id:
-              type: integer
-          required:
-            - title
-            - year
-            - director_id
+        description: ID of the movie to retrieve
     responses:
       200:
-        description: Movie updated
+        description: A movie object with director name
         schema:
           type: object
           properties:
@@ -213,16 +292,11 @@ def update_movie(id):
               type: string
             year:
               type: integer
+            rating:
+              type: number
             director_id:
               type: integer
-      400:
-        description: Bad request
-        schema:
-          type: object
-          properties:
-            error:
-              type: string
-            message:
+            director_name:
               type: string
       404:
         description: Movie not found
@@ -234,34 +308,28 @@ def update_movie(id):
             message:
               type: string
     """
+    db = get_db()
+    cursor = db.cursor()
+    query = """
+        SELECT m.id, m.title, m.year, d.name AS director_name 
+        FROM movies m 
+        JOIN directors d ON m.director_id = d.id 
+        WHERE m.id = ?
+    """
+    try: 
+        cursor.execute(query, (id,))
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+        
+    row = cursor.fetchone()
+    if not row:
+        return error_response("Not Found", f"Movie with id {id} was not found.", 404)
 
-    data = request.get_json(silent=True)
+    movie = dict(row)
 
-    errors = validate_movie(data)
-
-    if errors:
-        return error_response("Bad Request", "; ".join(errors), 400)
-
-    # find the movie index by id
-    index = next((i for i, m in enumerate(movies) if m["id"] == id), None)
-
-    if index is None: # check if movie was found, for idempotency, means if the same request is sent multiple times, the response will be the same
-        return jsonify({
-            "error": "Not Found",
-            "message": f"Movie with id {id} not found."
-        }), 404
-
-    updated_movie = {
-        "id": id,  # keep the same id from the URL
-        "title": data["title"],
-        "director": data["director"],
-        "year": data["year"],
-        "watched": data["watched"],
-    }
-
-    movies[index] = updated_movie
-
-    return jsonify(updated_movie), 200
+    response = jsonify(movie)
+    response.status_code = 200
+    return response
 
 def validate_movie(data):
     """Return a list of error messages for a movie request body (empty if valid)."""
@@ -273,22 +341,23 @@ def validate_movie(data):
     if "title" not in data or not isinstance(data["title"], str) or not data["title"].strip(): # check if title is not in body or title is not a string or has an empty value
         errors.append("Title is required and must be a non-empty string.")
 
-    if "director" not in data or not isinstance(data["director"], str) or not data["director"].strip():
-        errors.append("Director is required and must be a non-empty string.")
-
     if "year" not in data or not isinstance(data["year"], int):
         errors.append("Year is required and must be a number.")
+    
+    if "rating" in data:
+        if not isinstance(data["rating"], (int, float)):
+            errors.append("Rating must be a number.")
+        elif data["rating"] < 0 or data["rating"] > 10:
+            errors.append("Rating must be between 0 and 10.")
 
-    if "watched" not in data or not isinstance(data["watched"], bool):
-        errors.append("Watched is required and must be true or false.")
+    if "director_id" not in data or not isinstance(data["director_id"], int) or not data["director_id"]:
+        errors.append("Director is required and must be a valid ID.")
 
     return errors
-
 
 def error_response(error, message, status):
     """Build the standard JSON error response."""
     return jsonify({"error": error, "message": message}), status
-
 
 @app.route("/movies", methods=["POST"])
 def create_movie():
@@ -308,10 +377,13 @@ def create_movie():
               type: integer
             director_id:
               type: integer
+            rating:
+              type: number
           required:
             - title
             - year
             - director_id
+            - rating
     responses:
       201:
         description: Movie created
@@ -339,29 +411,146 @@ def create_movie():
 
     data = request.get_json(silent=True)  # parses the JSON body into a Python dict (None if invalid)
 
-    # 1) Work out the next id on the server
-    if movies:
-        next_id = max(m["id"] for m in movies) + 1 # finds the largest existing ID and adds 1
-    else:
-        next_id = 1 # if no movies, starts at 1
-
     errors = validate_movie(data)
 
     if errors:
         return error_response("Bad Request", "; ".join(errors), 400)
 
-    # declare new movie definition
+    db = get_db()
+    cursor = db.cursor()
+    query = """
+    INSERT INTO movies (title, year, rating, director_id)
+    VALUES(?, ?, ?, ?)
+    """
+
+    try: 
+        cursor.execute(query, (data["title"], data["year"], data["rating"], data["director_id"]))
+
+        # Get the ID of the newly created movie
+        new_id = cursor.lastrowid
+
+        db.commit()
+    except sqlite3.IntegrityError:
+        return error_response("Conflict", "Movie could not be created because it conflicts with existing data or constraints.", 409)
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
     new_movie = {
-        "id": next_id,
+        "id": new_id,
         "title": data["title"],
-        "director": data["director"],
         "year": data["year"],
-        "watched": data["watched"],
+        "rating": data["rating"],
+        "director_id": data["director_id"]
     }
 
-    movies.append(new_movie) # add to the in memory list
+    response = jsonify(new_movie)
+    response.status_code = 201 
+    response.headers["Location"] = f"/movies/{new_id}" # set location header to the URL of the newly created movie
+    return response 
 
-    return jsonify(new_movie), 201 # return created movie and 201 (CREATED)
+@app.route("/movies/<int:id>", methods=["PATCH"]) # PATCH to replace some fields - PUT would replace the whole resource 
+def update_movie(id):
+    """
+    Update a movie by ID
+    ---
+    parameters:
+      - name: id
+        in: path
+        type: integer
+        required: true
+        description: ID of the movie to update
+      - in: body
+        name: movie
+        required: true
+        schema:
+          type: object
+          properties:
+            title:
+              type: string
+            year:
+              type: integer
+            rating:
+              type: number
+            director_id:
+              type: integer
+    responses:
+      200:
+        description: Movie updated
+        schema:
+          type: object
+          properties:
+            id:
+              type: integer
+            title:
+              type: string
+            year:
+              type: integer
+            rating:
+              type: number
+            director_id:
+              type: integer
+      400:
+        description: Bad request
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
+      404:
+        description: Movie not found
+        schema:
+          type: object
+          properties:
+            error:
+              type: string
+            message:
+              type: string
+    """
+
+    data = request.get_json(silent=True)
+
+    fields = []
+    values = []
+    allowed_fields = ["title", "year", "rating", "director_id"]
+
+    for field in allowed_fields:
+        if field in data:
+            fields.append(f"{field} = ?") # if a field exists, add it to the fields list as "field = ?"
+            values.append(data[field])
+    
+    if not fields:
+        return error_response("Bad Request", "At least one field must be provided.", 400)
+
+    set_clause = ", ".join(fields) # convert fields list [] into a comma-separated string of "field = ?"
+
+    db = get_db()
+    cursor = db.cursor()
+    query = f"UPDATE movies SET {set_clause} WHERE id = ?"
+    values.append(id)  # add id to the end for the WHERE id = ?
+    
+    try:
+        cursor.execute(query, values)
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+    except sqlite3.IntegrityError:
+        return error_response("Conflict", "Movie could not be updated because it conflicts with existing data or constraints.", 409)
+
+    if cursor.rowcount == 0:
+        return jsonify({
+            "error": "Not Found",
+            "message": f"Movie with id {id} not found."
+        }), 404
+
+    db.commit()
+
+    cursor.execute("SELECT * FROM movies WHERE id = ?", (id,))
+    row = cursor.fetchone()
+    updated_movie = dict(row)
+
+    response = jsonify(updated_movie)
+    response.status_code = 200
+    return response
 
 @app.route("/movies/<int:id>", methods=["DELETE"])
 def delete_movie(id):
@@ -388,20 +577,27 @@ def delete_movie(id):
               type: string
     """
 
-    # find movie
-    index = next((i for i, m in enumerate(movies) if m["id"] == id), None)
+    db = get_db()
+    cursor = db.cursor()
+    query = """
+    DELETE FROM movies
+    WHERE id = ?
+    """
 
-    # check if movie was found
-    if index is None:
+    try:
+        cursor.execute(query, (id,))
+    except sqlite3.OperationalError:
+        return error_response("Internal Server Error", "The database could not retrieve this operation.", 500)
+
+    if cursor.rowcount == 0: # if no rows were deleted, the movie was not found
         return jsonify({
             "error": "Not Found",
             "message": f"Movie with id {id} not found."
         }), 404
 
-    del movies[index]
+    db.commit()
 
-    # return empty response with 204 status code
-    return "", 204
+    return "", 204 # return empty response with 204 status code
 
 
 if __name__ == '__main__':
